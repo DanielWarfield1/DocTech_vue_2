@@ -1,25 +1,29 @@
+<!-- App.vue -->
 <template>
-  <AudioRecorder />
+  <div>
+    <AudioRecorder @api-response="handleApiResponse" />
+    <PdfViewer :apiResponse="apiResponse" />
+  </div>
 </template>
 
 <script>
-import AudioRecorder from './components/AudioRecorder.vue'
+import PdfViewer from './components/PdfViewer.vue';
+import AudioRecorder from './components/AudioRecorder.vue';
 
 export default {
-  name: 'App',
   components: {
-    AudioRecorder
-  }
-}
+    PdfViewer,
+    AudioRecorder,
+  },
+  data() {
+    return {
+      apiResponse: {},
+    };
+  },
+  methods: {
+    handleApiResponse(response) {
+      this.apiResponse = response;
+    },
+  },
+};
 </script>
-
-<style>
-#app {
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-align: center;
-  color: #2c3e50;
-  margin-top: 60px;
-}
-</style>

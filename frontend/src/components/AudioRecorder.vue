@@ -1,10 +1,11 @@
+<!-- AudioRecorder.vue -->
 <template>
   <div>
     <button @click="toggleRecording">
       {{ isRecording ? "Stop Recording" : "Start Recording" }}
     </button>
     <canvas ref="canvas" width="300" height="300"></canvas>
-    <audio ref="audio" :src="audioUrl" @play="onPlaybackStart" @ended="onPlaybackEnd"></audio>
+    <audio ref="audio" :src="audioResponseUrl" type="audio/mpeg" controls></audio>
   </div>
 </template>
 
@@ -14,17 +15,12 @@ export default {
   data() {
     return {
       isRecording: false,
-      isPlayingBack: false,
       mediaRecorder: null,
       audioChunks: [],
-      audioUrl: null,
-      audioContext: null,
-      analyser: null,
+      audioResponseUrl: null,
+      plan: null,
       microphoneStream: null,
       animationFrameId: null,
-      silenceTimeout: null,
-      silenceThreshold: 0.05,
-      playbackSource: null,
     };
   },
   methods: {
@@ -37,27 +33,19 @@ export default {
     },
     async startRecording() {
       this.isRecording = true;
-      this.isPlayingBack = false;
       this.audioChunks = [];
-      this.audioUrl = null;
-
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.microphoneStream = stream;
-
       this.mediaRecorder = new MediaRecorder(stream);
+
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) this.audioChunks.push(event.data);
       };
+
       this.mediaRecorder.onstop = this.onRecordingStop;
       this.mediaRecorder.start();
 
-      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      const source = this.audioContext.createMediaStreamSource(stream);
-      this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 256;
-      source.connect(this.analyser);
-
-      this.startVisualizing();
+      this.setupVisualization();
     },
     stopRecording() {
       this.isRecording = false;
@@ -67,101 +55,60 @@ export default {
     },
     async onRecordingStop() {
       const audioBlob = new Blob(this.audioChunks, { type: "audio/ogg; codecs=opus" });
-      this.audioUrl = URL.createObjectURL(audioBlob);
-
-      // Send the audioBlob to the Flask server
       const formData = new FormData();
       formData.append("audio", audioBlob, "recording.ogg");
 
       try {
-        const response = await fetch("http://localhost:5000/upload", {
+        const response = await fetch("http://localhost:5000/decide_and_respond", {
           method: "POST",
           body: formData,
         });
+        const data = await response.json();
 
-        if (response.ok) {
-          console.log("Audio file uploaded successfully");
-        } else {
-          console.error("Failed to upload audio file");
-        }
-      } catch (error) {
-        console.error("Error uploading audio file:", error);
-      }
+        this.audioResponseUrl = data.audio_url;
+        console.log("Audio Response URL:", this.audioResponseUrl);
+        this.plan = data.plan;
 
-      // Set up playback (optional)
-      if (!this.playbackSource) {
-        this.playbackSource = this.audioContext.createMediaElementSource(this.$refs.audio);
-        this.analyser = this.audioContext.createAnalyser();
-        this.analyser.fftSize = 256;
-
-        this.playbackSource.connect(this.analyser);
-        this.analyser.connect(this.audioContext.destination);
-      }
-
-      setTimeout(() => {
-        this.$refs.audio.play().catch((error) => {
-          console.error("Playback failed:", error);
+        // Ensure the audio source is loaded, then play it
+        this.$nextTick(() => {
+          this.$refs.audio.load();  // Load the new audio source
+          this.$refs.audio.play().catch(error => {
+            console.error("Error playing audio:", error);
+          });
         });
-      }, 100);
+
+        // Execute the plan in parallel with the audio playback
+        this.executePlan();
+      } catch (error) {
+        console.error("Error handling audio file:", error);
+      }
     },
-    startVisualizing() {
+    executePlan() {
+      if (this.plan) {
+        fetch("http://localhost:5000/execute_plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(this.plan),
+        })
+        .then(response => response.json())
+        .then(data => {
+          this.$emit("api-response", data);  // Emit the response for any parent components
+        })
+        .catch(error => console.error("Error executing plan:", error));
+      }
+    },
+    setupVisualization() {
       const canvas = this.$refs.canvas;
       const ctx = canvas.getContext("2d");
-      const bufferLength = this.analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-
       const draw = () => {
-        this.analyser.getByteFrequencyData(dataArray);
-
-        let sumSquares = 0.0;
-        for (let i = 0; i < bufferLength; i++) {
-          sumSquares += (dataArray[i] / 255) ** 2;
-        }
-        const rms = Math.sqrt(sumSquares / bufferLength);
-        const radius = this.isRecording || this.isPlayingBack ? rms * 150 : 10;
-        const color = this.isRecording
-          ? "white"
-          : this.isPlayingBack
-          ? "rgba(173, 216, 230, 0.8)"
-          : "rgba(255, 255, 255, 0.2)";
-
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        ctx.beginPath();
-        ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, 2 * Math.PI);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.closePath();
-
-        if (this.isRecording && rms < this.silenceThreshold) {
-          if (!this.silenceTimeout) {
-            this.silenceTimeout = setTimeout(() => {
-              this.stopRecording();
-            }, 1000);
-          }
-        } else {
-          clearTimeout(this.silenceTimeout);
-          this.silenceTimeout = null;
-        }
-
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         this.animationFrameId = requestAnimationFrame(draw);
       };
-
       draw();
-    },
-    onPlaybackStart() {
-      this.isPlayingBack = true;
-    },
-    onPlaybackEnd() {
-      this.isPlayingBack = false;
-      cancelAnimationFrame(this.animationFrameId);
     },
   },
   beforeUnmount() {
     cancelAnimationFrame(this.animationFrameId);
-    if (this.silenceTimeout) clearTimeout(this.silenceTimeout);
-    if (this.audioContext) this.audioContext.close();
     if (this.microphoneStream) {
       this.microphoneStream.getTracks().forEach((track) => track.stop());
     }
