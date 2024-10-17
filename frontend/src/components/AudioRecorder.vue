@@ -20,7 +20,11 @@ export default {
       audioResponseUrl: null,
       plan: null,
       microphoneStream: null,
+      audioContext: null,
+      analyser: null,
       animationFrameId: null,
+      silenceTimeout: null,
+      silenceThreshold: 0.05, // Adjust this threshold as needed
     };
   },
   methods: {
@@ -36,21 +40,27 @@ export default {
       this.audioChunks = [];
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.microphoneStream = stream;
-      this.mediaRecorder = new MediaRecorder(stream);
 
+      this.mediaRecorder = new MediaRecorder(stream);
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) this.audioChunks.push(event.data);
       };
-
       this.mediaRecorder.onstop = this.onRecordingStop;
       this.mediaRecorder.start();
 
-      this.setupVisualization();
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = this.audioContext.createMediaStreamSource(stream);
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      source.connect(this.analyser);
+
+      this.startVisualizing();
     },
     stopRecording() {
       this.isRecording = false;
       this.mediaRecorder.stop();
       this.microphoneStream.getTracks().forEach((track) => track.stop());
+      if (this.silenceTimeout) clearTimeout(this.silenceTimeout);
       cancelAnimationFrame(this.animationFrameId);
     },
     async onRecordingStop() {
@@ -97,18 +107,54 @@ export default {
         .catch(error => console.error("Error executing plan:", error));
       }
     },
-    setupVisualization() {
+    startVisualizing() {
       const canvas = this.$refs.canvas;
       const ctx = canvas.getContext("2d");
+      const bufferLength = this.analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
       const draw = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        this.analyser.getByteFrequencyData(dataArray);
+
+        let sumSquares = 0.0;
+        for (let i = 0; i < bufferLength; i++) {
+          sumSquares += (dataArray[i] / 255) ** 2;
+        }
+        const rms = Math.sqrt(sumSquares / bufferLength); // Root Mean Square for volume level
+        const radius = this.isRecording ? rms * 150 : 10;
+        const color = this.isRecording ? "white" : "rgba(255, 255, 255, 0.2)";
+
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, 2 * Math.PI);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.closePath();
+
+        // Auto-stop recording if volume is below threshold
+        if (this.isRecording && rms < this.silenceThreshold) {
+          if (!this.silenceTimeout) {
+            this.silenceTimeout = setTimeout(() => {
+              this.stopRecording();
+            }, 1000); // Silence period before stopping, adjust as needed
+          }
+        } else {
+          clearTimeout(this.silenceTimeout);
+          this.silenceTimeout = null;
+        }
+
         this.animationFrameId = requestAnimationFrame(draw);
       };
+
       draw();
     },
   },
   beforeUnmount() {
     cancelAnimationFrame(this.animationFrameId);
+    if (this.silenceTimeout) clearTimeout(this.silenceTimeout);
+    if (this.audioContext) this.audioContext.close();
     if (this.microphoneStream) {
       this.microphoneStream.getTracks().forEach((track) => track.stop());
     }

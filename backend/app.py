@@ -1,5 +1,4 @@
-# main_app.py
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_file
 import os
 import ffmpeg
 from openai import OpenAI
@@ -58,8 +57,15 @@ def decide_and_respond_endpoint():
 @app.route('/audio_response')
 def audio_response():
     filename = request.args.get('filename')
-    print("Serving audio response file:", filename)
-    return send_from_directory(UPLOAD_FOLDER, filename, mimetype="audio/mpeg")
+    file_path = os.path.join(os.path.dirname(__file__), filename)
+    print("Requested file path:", file_path)
+
+    if not os.path.exists(file_path):
+        print("File not found:", file_path)
+        return "File not found", 404
+
+    print("Serving file:", file_path)
+    return send_file(file_path, mimetype="audio/mpeg")
 
 @app.route('/execute_plan', methods=['POST'])
 def execute_plan():
