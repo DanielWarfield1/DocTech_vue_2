@@ -1,7 +1,7 @@
 <template>
     <div>
       <iframe v-if="currentPdfUrl" :src="iframeSrc" class="pdf-iframe"></iframe>
-      <div v-else class="no-pdf">No PDF to display.</div>
+      <div v-else class="no-pdf">Ask A Question!</div>
     </div>
   </template>
   

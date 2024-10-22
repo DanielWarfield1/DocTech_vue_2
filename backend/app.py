@@ -74,7 +74,17 @@ def execute_plan():
         print("Executing plan:", plan)
         response = handle_action(plan)
         print("Response from handle_action:", response)
-        return jsonify(response), 200
+
+        # Add follow-up audio URL if needed
+        followup_audio_url = None
+        if response.get('does_follow_up'):
+            followup_audio_url = f"http://localhost:5000/audio_response?filename=speech2.mp3"
+
+        # Send the response back with follow-up audio URL if necessary
+        return jsonify({
+            **response,  # Keep the existing response structure intact
+            'followup_audio_url': followup_audio_url  # Add follow-up audio URL only if necessary
+        }), 200
     except Exception as e:
         print("An error occurred while executing plan:", str(e))
         return jsonify({'error': str(e)}), 500

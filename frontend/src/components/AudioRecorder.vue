@@ -1,11 +1,10 @@
-<!-- AudioRecorder.vue -->
 <template>
-  <div>
-    <button @click="toggleRecording">
+  <div class="audio-recorder">
+    <button @click="toggleRecording" class="recording-button">
       {{ isRecording ? "Stop Recording" : "Start Recording" }}
     </button>
-    <canvas ref="canvas" width="300" height="300"></canvas>
-    <audio ref="audio" :src="audioResponseUrl" type="audio/mpeg" controls></audio>
+    <canvas ref="canvas" width="200" height="200"></canvas> <!-- Smaller canvas -->
+    <audio ref="audio" :src="audioResponseUrl" type="audio/mpeg" style="display: none;"></audio>
   </div>
 </template>
 
@@ -69,22 +68,26 @@ export default {
       formData.append("audio", audioBlob, "recording.ogg");
 
       try {
+        console.log("Sending request to /decide_and_respond...");
         const response = await fetch("http://localhost:5000/decide_and_respond", {
           method: "POST",
           body: formData,
         });
         const data = await response.json();
 
+        console.log("Response from /decide_and_respond:", data);
+
         this.audioResponseUrl = data.audio_url;
-        console.log("Audio Response URL:", this.audioResponseUrl);
         this.plan = data.plan;
 
         // Ensure the audio source is loaded, then play it
-        this.$nextTick(() => {
-          this.$refs.audio.load();  // Load the new audio source
-          this.$refs.audio.play().catch(error => {
+        this.$nextTick(async () => {
+          try {
+            await this.$refs.audio.load();  // Wait for the audio to load
+            await this.$refs.audio.play();  // Wait for the audio to start playing
+          } catch (error) {
             console.error("Error playing audio:", error);
-          });
+          }
         });
 
         // Execute the plan in parallel with the audio playback
@@ -95,6 +98,8 @@ export default {
     },
     executePlan() {
       if (this.plan) {
+        console.log("Sending plan to /execute_plan:", this.plan);
+
         fetch("http://localhost:5000/execute_plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -102,7 +107,21 @@ export default {
         })
         .then(response => response.json())
         .then(data => {
+          console.log("Response from /execute_plan:", data);
           this.$emit("api-response", data);  // Emit the response for any parent components
+
+          // If follow-up audio is provided, play it after executing the plan
+          if (data.followup_audio_url) {
+            this.$nextTick(async () => {
+              try {
+                this.audioResponseUrl = data.followup_audio_url;
+                await this.$refs.audio.load();  // Load the new follow-up audio
+                await this.$refs.audio.play();  // Play the follow-up audio
+              } catch (error) {
+                console.error("Error playing follow-up audio:", error);
+              }
+            });
+          }
         })
         .catch(error => console.error("Error executing plan:", error));
       }
@@ -121,8 +140,8 @@ export default {
           sumSquares += (dataArray[i] / 255) ** 2;
         }
         const rms = Math.sqrt(sumSquares / bufferLength); // Root Mean Square for volume level
-        const radius = this.isRecording ? rms * 150 : 10;
-        const color = this.isRecording ? "white" : "rgba(255, 255, 255, 0.2)";
+        const radius = this.isRecording ? rms * 100 : 10;
+        const color = this.isRecording ? "rgba(0, 150, 255, 0.8)" : "rgba(200, 200, 200, 0.2)";
 
         ctx.fillStyle = "black";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -163,7 +182,40 @@ export default {
 </script>
 
 <style scoped>
+.audio-recorder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
 canvas {
-  border: 1px solid #ddd;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background-color: black;
+  box-shadow: 0 0 20px rgba(0, 150, 255, 0.6);
+}
+
+.recording-button {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: bold;
+  color: white;
+  background-color: #0077cc;
+  border: none;
+  border-radius: 25px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  margin-top: 20px;
+  margin-bottom: 20px;
+}
+
+.recording-button:hover {
+  background-color: #005fa3;
+}
+
+.recording-button:active {
+  background-color: #00487a;
 }
 </style>

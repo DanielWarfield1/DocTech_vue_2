@@ -39,9 +39,10 @@ action_parse_prompt = ChatPromptTemplate.from_messages(
             - `find_fig`: find a specific figure, table, image, or specific item.
             - `find_doc`: find a specific doc
             - `non_determ`: no valid action is discernable
-            These are mutually exclusive. One should be true, the rest should be false.
+            The values above are mutually exclusive. One should be true, the rest should be false.
             note: you can use snap_page to go to a page relative to the current page.
-            note: blanket questions should default to find figure, unless they're obviously about a document
+            note: blanket questions should default to find figure, unless they're obviously about a document.
+            note: if a user asks a general question, assume it's from a figure and try to find a relevent figure.
             """,
         ),
         ("placeholder", "{messages}"),
@@ -85,7 +86,9 @@ fig_desc_parse_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """The user wants to find a figure. Extract a description of the figure the user needs.
+            """The user wants to find a figure. Extract a description of the figure the user needs. Include all
+            relevent information which might be used to identify the figure. Your response should be thorough, and fairly
+            long, but not contain fluff. "I need a figure of ..."
             """,
         ),
         ("placeholder", "{messages}"),
@@ -107,7 +110,9 @@ doc_desc_parse_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """The user wants to find a document. Extract a description of the document the user needs.
+            """The user wants to find a document. Extract a description of the document the user needs. Include all
+            relevent information which might be used to identify the figure. Your response should be thorough, and fairly
+            long, but not contain fluff. "I need a document of ..."
             """,
         ),
         ("placeholder", "{messages}"),
@@ -132,8 +137,9 @@ def gx_search_figure(query):
     )
 
     semantic_object = response.body['search']['results'][0]
+    rag_context = response.body['search']['text']
 
-    return semantic_object['sourceUrl'], semantic_object['boundingBoxes'][0]['pageNumber']
+    return semantic_object['sourceUrl'], semantic_object['boundingBoxes'][0]['pageNumber'], rag_context
 
 #===============================================================================
 # Search for Documents
@@ -147,8 +153,9 @@ def gx_search_document(query):
     )
 
     semantic_object = response.body['search']['results'][0]
+    rag_context = response.body['search']['text']
 
-    return semantic_object['sourceUrl']
+    return semantic_object['sourceUrl'], rag_context
 
 #===============================================================================
 # Old Endpoint
@@ -164,9 +171,9 @@ def handle_query(query, context):
     if response['snap_page']:
         response['page']=snap_page_parser.invoke({"messages": [("ai", f"my name is doc tech, what page would you like to snap to. Current state: {context}"),("user", query)]})
     elif response['find_fig']:
-        response['pdf'], response['page'] = gx_search_figure(query)
+        response['pdf'], response['page'], _ = gx_search_figure(query)
     elif response['find_pdf']:
-        response['pdf'] = gx_search_document(query)
+        response['pdf'], _ = gx_search_document(query)
 
     return response
 
@@ -180,6 +187,7 @@ def decide_and_respond(query, context):
     response['query']= query
     response['context']=context
     response['page']=None
+    response['does_follow_up']=False
 
     #doing follow up as necessary
     if response['snap_page']:
@@ -187,14 +195,23 @@ def decide_and_respond(query, context):
 
     #Prompting the language model to come up with a response.
     class VerbalResponse(TypedDict):
-        response: str
+        immediate_response: str
+        followup_response: bool
 
     verb_resp_parse_prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
                 f"""You will be given a users query, and the actions a system decided to take based on that query.
-                respond to the user verbally, informing them what action will be taken. Be breif.
+                respond to the user verbally with an "immediate_response", informing them what action will be taken. Be breif and conversational.
+                This is powered by GroundX, which is a retreival engine designed to work with complex real world documents.
+                If the user asks about GroundX, tell them they use a computer vision based parsing system, trained on a large amount of corperate documents to understand documents. GroundX can run in the cloud, on prem, whatever.
+
+                After the "immediate_response" has been given, and an action has been performed, you will have access to additional information if the action includes finding a pdf or figure.
+                use "followup_response" to decide if you think it will be helpful to use that information to provide further verbal response.
+                For instance, if a user asks you to pull up a figure or PDF without a question, no further verbal response is necessary. If the user asks you
+                to answer a question, or needs help with something, you can answer that question with a verbal response after the information is retreived.
+                If you already know the answer, you can provide that in the "immediate_response", and no "followup_response" is necessary.
                 """,
             ),
             ("placeholder", "{messages}"),
@@ -205,9 +222,15 @@ def decide_and_respond(query, context):
         model="gpt-4o", temperature=0
     ).with_structured_output(VerbalResponse)
 
-    verbal_response = verb_resp_parser.invoke({"messages": [("user", query),("ai", str(response))]})['response']
+    response_info = verb_resp_parser.invoke({"messages": [("user", query),("ai", str(response))]})
+    verbal_response = response_info['immediate_response']
+    response['does_follow_up'] = response_info['followup_response']
+
     print('verbal response:')
     print(verbal_response)
+
+    print('Will Follow Up:')
+    print(response['does_follow_up'])
 
     #constructing audio
     from openai import OpenAI
@@ -224,16 +247,65 @@ def decide_and_respond(query, context):
     #returning json object
     return response
 
-def handle_action(response):
+def handle_action(response): 
     query = response['query']
-    context = response['context']
     response['pdf']= None
     response['page']=None
 
-    #doing follow up as necessary
+    #Finding figure or pdf if necessary
     if response['find_fig']:
-        response['pdf'], response['page'] = gx_search_figure(query)
+        response['pdf'], response['page'], rag_context = gx_search_figure(query)
     elif response['find_pdf']:
-        response['pdf'] = gx_search_document(query)
+        response['pdf'], rag_context = gx_search_document(query)
+
+    if response['does_follow_up']:
+        #Constructing a verbal response post RAG.
+        class VerbalResponse(TypedDict):
+            response: str
+
+        verb_resp_parse_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    f"""A user has a query which has triggered a process to look up data which should be relevent to that query.
+                    The relevent data is included below. Use this data to answer the users question. Say things like "from this document"
+                    and "on page __".
+
+                    If the data does not answer the question, tell the user you're not sure but they might find their answer in the document below.
+
+                    you don't have to clarify that you can't see or can't show the document. The information below contains the information you need,
+                    and the user is currently looking at the document.
+
+                    Try not to repeat the full document name, as that can be rather long.
+
+                    Try to keep your responses breif, quick, and direct unless prompted otherwise.
+
+                    === lookup data relevent to query ===
+                    {str(rag_context).replace('}', '}}').replace('{', '{{')}
+                    """,
+                ),
+                ("placeholder", "{messages}"),
+            ]
+        )
+
+        verb_resp_parser = verb_resp_parse_prompt | ChatOpenAI(
+            model="gpt-4o", temperature=0
+        ).with_structured_output(VerbalResponse)
+        verbal_response = verb_resp_parser.invoke({"messages": [("user", query)]})['response']
+
+        print('followup verbal response:')
+        print(verbal_response)
+
+        #constructing audio
+        from openai import OpenAI
+        client = OpenAI()
+
+        speech_file_path = "speech2.mp3"
+        r = client.audio.speech.create(
+        model="tts-1",
+        voice="alloy",
+        input=verbal_response
+        )
+        r.stream_to_file(speech_file_path)
 
     return response
